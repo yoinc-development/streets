@@ -1,6 +1,7 @@
-import {useCallback, useEffect, useMemo, useState} from 'react';
+import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import './App.css';
 import {DiscordSDK} from '@discord/embedded-app-sdk';
+import html2canvas from 'html2canvas';
 
 const RANKS = [
     {label: '2', value: 2},
@@ -40,6 +41,8 @@ const createRandomCard = () => ({
     suit: randomSuit()
 });
 
+const HIGH_SCORE_STORAGE_KEY = 'streets_high_score';
+
 const drawDifferentCard = (currentCard) => {
     if (!currentCard) {
         return createRandomCard();
@@ -69,6 +72,8 @@ function App() {
         history: [],
         lastRound: null
     });
+
+    const [highScore, setHighScore] = useState(0);
 
     useEffect(() => {
         let cancelled = false;
@@ -201,6 +206,34 @@ function App() {
         };
     }, []);
 
+    useEffect(() => {
+        if (typeof window === 'undefined') {
+            return;
+        }
+
+        const storedHighScore = window.localStorage.getItem(HIGH_SCORE_STORAGE_KEY);
+        if (!storedHighScore) {
+            return;
+        }
+
+        const parsed = parseInt(storedHighScore, 10);
+        if (!Number.isNaN(parsed) && parsed >= 0) {
+            setHighScore(parsed);
+        }
+    }, []);
+
+    useEffect(() => {
+        if (gameState.score <= highScore) {
+            return;
+        }
+
+        setHighScore(gameState.score);
+
+        if (typeof window !== 'undefined') {
+            window.localStorage.setItem(HIGH_SCORE_STORAGE_KEY, String(gameState.score));
+        }
+    }, [gameState.score, highScore]);
+
     const startGame = useCallback(() => {
         const firstCard = createRandomCard();
         setGameState({
@@ -247,7 +280,7 @@ function App() {
 
             return {
                 status: 'finished',
-                currentCard: prev.currentCard,
+                currentCard: nextCard,
                 score: prev.score,
                 history: [...prev.history, round],
                 lastRound: {
@@ -261,16 +294,39 @@ function App() {
     const canGuess = gameState.status === 'guessing';
 
     const displayedCard = useMemo(() => {
-        if (gameState.status === 'guessing') {
+        if (gameState.status === 'guessing' || gameState.status === 'finished') {
             return gameState.currentCard;
         }
 
         return gameState.lastRound?.round?.startingCard ?? null;
     }, [gameState.status, gameState.currentCard, gameState.lastRound]);
 
+    const scoreboardRef = useRef(null);
+
     const displayedCardRank = displayedCard?.rank.label ?? '—';
     const displayedCardSuit = displayedCard?.suit.symbol ?? '♠';
     const displayedSuitClass = displayedCard?.suit.color ?? 'black';
+    const isFailureDisplay = gameState.status === 'finished' && gameState.lastRound?.outcome === 'failed';
+
+    const captureTable = useCallback(async () => {
+        if (!scoreboardRef.current) {
+            return;
+        }
+
+        try {
+            const canvas = await html2canvas(scoreboardRef.current, {
+                backgroundColor: null,
+                useCORS: true,
+                scale: window.devicePixelRatio || 1
+            });
+            const link = document.createElement('a');
+            link.download = `streets-table-${Date.now()}.png`;
+            link.href = canvas.toDataURL('image/png');
+            link.click();
+        } catch (error) {
+            console.error('Failed to capture table screenshot:', error);
+        }
+    }, []);
 
     const statusBadge = useMemo(() => {
         switch (connectionState.status) {
@@ -341,7 +397,8 @@ function App() {
                                 </div>
 
                                 <div className="card current-card" aria-live="polite">
-                                    <div className={`card-face suit-${displayedSuitClass}`}>
+                                    <div
+                                        className={`card-face suit-${displayedSuitClass}${isFailureDisplay ? ' card-face-failed' : ''}`}>
                                         <div className="card-corner top">
                                             <span className="card-rank">{displayedCardRank}</span>
                                             <span className="card-suit">{displayedCardSuit}</span>
@@ -411,34 +468,45 @@ function App() {
                                 )}
                             </div>
 
-                            <div className="scoreboard">
-                                <div className="score-header">
-                                    <h3>Scoreboard</h3>
-                                    <span className="score">Score: {gameState.score}</span>
-                                </div>
-                                <ul>
-                                    {gameState.history.length === 0 && <li>No rounds yet.</li>}
-                                    {gameState.history.map((round) => (
-                                        <li key={round.id} className={round.success ? 'round-success' : 'round-fail'}>
-                                            <span>Round #{round.id}</span>
-                                            <span className="card-sequence">
+                            <div className="scoreboard-section">
+                                <div className="scoreboard" ref={scoreboardRef}>
+                                    <div className="score-header">
+                                        <h3>Scoreboard</h3>
+                                        <div className="score-metrics">
+                                            <span className="score-highest">Highest: {highScore}</span>
+                                            <span className="score">Score: {gameState.score}</span>
+                                        </div>
+                                    </div>
+                                    <ul>
+                                        {gameState.history.length === 0 && <li>No rounds yet.</li>}
+                                        {gameState.history.map((round) => (
+                                            <li key={round.id}
+                                                className={round.success ? 'round-success' : 'round-fail'}>
+                                                <span>Round #{round.id}</span>
+                                                <span className="card-sequence">
                         <span className={`card-text suit-${round.startingCard.suit.color}`}>
                           {round.startingCard.rank.label}
                             {round.startingCard.suit.symbol}
                         </span>
-                                                {' '}
-                                                →
-                                                {' '}
-                                                <span className={`card-text suit-${round.nextCard.suit.color}`}>
+                                                    {' '}
+                                                    →
+                                                    {' '}
+                                                    <span className={`card-text suit-${round.nextCard.suit.color}`}>
                           {round.nextCard.rank.label}
-                                                    {round.nextCard.suit.symbol}
+                                                        {round.nextCard.suit.symbol}
                         </span>
                       </span>
-                                            <span>{toTitleCase(round.guess)}</span>
-                                            <span>{round.success ? 'Correct' : 'Incorrect'}</span>
-                                        </li>
-                                    ))}
-                                </ul>
+                                                <span>{toTitleCase(round.guess)}</span>
+                                                <span>{round.success ? 'Correct' : 'Incorrect'}</span>
+                                            </li>
+                                        ))}
+                                    </ul>
+                                </div>
+                                {gameState.status === 'finished' && (
+                                    <button className="secondary" onClick={captureTable}>
+                                        Export table
+                                    </button>
+                                )}
                             </div>
                         </>
                     )}
